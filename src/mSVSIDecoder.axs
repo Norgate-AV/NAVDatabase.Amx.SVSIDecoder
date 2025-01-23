@@ -86,7 +86,7 @@ DEFINE_MUTUALLY_EXCLUSIVE
 (* EXAMPLE: DEFINE_FUNCTION <RETURN_TYPE> <NAME> (<PARAMETERS>) *)
 (* EXAMPLE: DEFINE_CALL '<NAME>' (<PARAMETERS>) *)
 define_function Send(char cPayload[]) {
-    NAVLog(NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_TO, dvPort, cPayload))
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_TO, dvPort, cPayload))
     send_string dvPort, "cPayload"
 }
 
@@ -105,13 +105,13 @@ define_function Process() {
 
     iSemaphore = true
 
-    NAVLog("'Processing String From ', NAVStringSurroundWith(NAVDeviceToString(dvPort), '[', ']'), '-[', cRxBuffer, ']'")
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'Processing String From ', NAVStringSurroundWith(NAVDeviceToString(dvPort), '[', ']'), '-[', cRxBuffer, ']'")
 
     while (length_array(cRxBuffer) && NAVContains(cRxBuffer, "NAV_CR")) {
     cTemp = remove_string(cRxBuffer, "NAV_CR", 1)
 
     if (length_array(cTemp)) {
-        NAVLog(NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_PARSING_STRING_FROM, dvPort, cTemp))
+        NAVErrorLog(NAV_LOG_LEVEL_DEBUG, NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_PARSING_STRING_FROM, dvPort, cTemp))
         cTemp = NAVStripCharsFromRight(cTemp, 1)    //Remove delimiter
     }
     }
@@ -141,26 +141,26 @@ DEFINE_EVENT
 data_event[dvPort] {
     online: {
     uIPConnection.IsConnected = true
-    NAVLog("'SVSI_ONLINE<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'SVSI_ONLINE<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
     }
     string: {
     [vdvObject, DEVICE_COMMUNICATING] = true
     [vdvObject, DATA_INITIALIZED] = true
-    NAVLog(NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_FROM, data.device, data.text))
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_FROM, data.device, data.text))
     if (!iSemaphore) { Process() }
     }
     offline: {
     if (data.device.number == 0) {
         uIPConnection.IsConnected = false
         NAVClientSocketClose(data.device.port)
-        NAVLog("'SVSI_OFFLINE<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
+        NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'SVSI_OFFLINE<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
     }
     }
     onerror: {
     if (data.device.number == 0) {
         uIPConnection.IsConnected = false
         //NAVClientSocketClose(data.device.port)
-        NAVLog("'SVSI_ONERROR<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
+        NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'SVSI_ONERROR<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
     }
     }
 }
@@ -170,7 +170,7 @@ data_event[vdvObject] {
     stack_var char cCmdHeader[NAV_MAX_CHARS]
     stack_var char cCmdParam[3][NAV_MAX_CHARS]
 
-    NAVLog(NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_COMMAND_FROM, data.device, data.text))
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_COMMAND_FROM, data.device, data.text))
 
     cCmdHeader = DuetParseCmdHeader(data.text)
     cCmdParam[1] = DuetParseCmdParam(data.text)
