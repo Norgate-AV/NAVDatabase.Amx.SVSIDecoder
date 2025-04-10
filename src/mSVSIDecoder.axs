@@ -4,8 +4,16 @@ MODULE_NAME='mSVSIDecoder'  (
                             )
 
 (***********************************************************)
+#DEFINE USING_NAV_MODULE_BASE_CALLBACKS
+#DEFINE USING_NAV_MODULE_BASE_PROPERTY_EVENT_CALLBACK
+#DEFINE USING_NAV_MODULE_BASE_PASSTHRU_EVENT_CALLBACK
+#DEFINE USING_NAV_STRING_GATHER_CALLBACK
 #include 'NAVFoundation.ModuleBase.axi'
 #include 'NAVFoundation.SocketUtils.axi'
+#include 'NAVFoundation.TimelineUtils.axi'
+#include 'NAVFoundation.StringUtils.axi'
+#include 'NAVFoundation.ErrorLogUtils.axi'
+#include 'LibSvsi.axi'
 
 /*
  _   _                       _          ___     __
@@ -48,9 +56,13 @@ DEFINE_DEVICE
 (***********************************************************)
 DEFINE_CONSTANT
 
-constant long TL_IP_CLIENT_CHECK = 1
+constant long TL_SOCKET_CHECK   = 1
+constant long TL_HEARTBEAT      = 2
 
-constant integer TCP_PORT    = 50002
+constant long TL_SOCKET_CHECK_INTERVAL[]    = { 3000 }
+constant long TL_HEARTBEAT_INTERVAL[]       = { 20000 }
+
+constant char DELIMITER[] = {NAV_CR_CHAR}
 
 
 (***********************************************************)
@@ -62,13 +74,6 @@ DEFINE_TYPE
 (*               VARIABLE DEFINITIONS GO BELOW             *)
 (***********************************************************)
 DEFINE_VARIABLE
-volatile long ltIPClientCheck[] = { 3000 }
-
-volatile integer iSemaphore
-volatile char cRxBuffer[NAV_MAX_BUFFER]
-
-volatile _NAVSocketConnection uIPConnection
-
 
 (***********************************************************)
 (*               LATCHING DEFINITIONS GO BELOW             *)
@@ -85,129 +90,216 @@ DEFINE_MUTUALLY_EXCLUSIVE
 (***********************************************************)
 (* EXAMPLE: DEFINE_FUNCTION <RETURN_TYPE> <NAME> (<PARAMETERS>) *)
 (* EXAMPLE: DEFINE_CALL '<NAME>' (<PARAMETERS>) *)
-define_function Send(char cPayload[]) {
-    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_TO, dvPort, cPayload))
-    send_string dvPort, "cPayload"
-}
 
-define_function char[NAV_MAX_CHARS] Build(char cPayload[]) {
-    return "cPayload, NAV_CR"
-}
+define_function SendString(char payload[]) {
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_TO,
+                                            dvPort,
+                                            payload))
 
-
-define_function SetChannel(integer iChannel) {
-    Send(Build("'set:', itoa(iChannel)"))
+    send_string dvPort, "payload"
+    wait 1 module.CommandBusy = false
 }
 
 
-define_function Process() {
-    stack_var char cTemp[NAV_MAX_BUFFER]
+#IF_DEFINED USING_NAV_STRING_GATHER_CALLBACK
+define_function NAVStringGatherCallback(_NAVStringGatherResult args) {
+    stack_var char data[NAV_MAX_BUFFER]
+    stack_var char delimiter[NAV_MAX_CHARS]
 
-    iSemaphore = true
+    stack_var char key[NAV_MAX_CHARS]
+    stack_var char value[255]
 
-    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'Processing String From ', NAVStringSurroundWith(NAVDeviceToString(dvPort), '[', ']'), '-[', cRxBuffer, ']'")
+    data = args.Data
+    delimiter = args.Delimiter
 
-    while (length_array(cRxBuffer) && NAVContains(cRxBuffer, "NAV_CR")) {
-    cTemp = remove_string(cRxBuffer, "NAV_CR", 1)
+    NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_PARSING_STRING_FROM,
+                                            dvPort,
+                                            data))
 
-    if (length_array(cTemp)) {
-        NAVErrorLog(NAV_LOG_LEVEL_DEBUG, NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_PARSING_STRING_FROM, dvPort, cTemp))
-        cTemp = NAVStripCharsFromRight(cTemp, 1)    //Remove delimiter
+    data = NAVStripRight(data, length_array(delimiter))
+
+    key = NAVGetStringBefore(data, ':')
+    value = NAVTrimString(NAVGetStringAfter(data, ':'))
+
+    switch (key) {
+        case 'STREAM': {
+            if (!module.Device.IsInitialized) {
+                Init()
+            }
+
+            NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                        "'mSVSIDecoder => [', NAVDeviceToString(dvPort), ']: Current Stream: ', value")
+        }
     }
+}
+#END_IF
+
+
+define_function MaintainSocketConnection() {
+    if (module.Device.SocketConnection.IsConnected) {
+        return
     }
 
-    iSemaphore = false
+    NAVClientSocketOpen(module.Device.SocketConnection.Socket,
+                        module.Device.SocketConnection.Address,
+                        module.Device.SocketConnection.Port,
+                        IP_TCP)
 }
 
 
-define_function MaintainIPConnection() {
-    if (!uIPConnection.IsConnected) {
-    NAVClientSocketOpen(dvPort.PORT, uIPConnection.Address, uIPConnection.Port, IP_TCP)
+define_function Init() {
+    module.Device.IsInitialized = true
+    UpdateFeedback()
+}
+
+
+define_function CommunicationTimeOut(integer timeout) {
+    cancel_wait 'TimeOut'
+
+    module.Device.IsCommunicating = true
+    UpdateFeedback()
+
+    wait (timeout * 10) 'TimeOut' {
+        module.Device.IsCommunicating = false
+        UpdateFeedback()
     }
 }
+
+
+define_function Reset() {
+    module.Device.SocketConnection.IsConnected = false
+    module.Device.IsCommunicating = false
+    module.Device.IsInitialized = false
+    UpdateFeedback()
+
+    NAVTimelineStop(TL_HEARTBEAT)
+}
+
+
+#IF_DEFINED USING_NAV_MODULE_BASE_PROPERTY_EVENT_CALLBACK
+define_function NAVModulePropertyEventCallback(_NAVModulePropertyEvent event) {
+    switch (event.Name) {
+        case NAV_MODULE_PROPERTY_EVENT_IP_ADDRESS: {
+            module.Device.SocketConnection.Address = NAVTrimString(event.Args[1])
+            module.Device.SocketConnection.Port = IP_PORT
+
+            NAVTimelineStart(TL_SOCKET_CHECK,
+                                TL_SOCKET_CHECK_INTERVAL,
+                                TIMELINE_ABSOLUTE,
+                                TIMELINE_REPEAT)
+        }
+    }
+}
+#END_IF
+
+
+#IF_DEFINED USING_NAV_MODULE_BASE_PASSTHRU_EVENT_CALLBACK
+define_function NAVModulePassthruEventCallback(_NAVModulePassthruEvent event) {
+    if (event.Device != vdvObject) {
+        return
+    }
+
+    SendString("event.Payload, NAV_CR")
+}
+#END_IF
+
+
+define_function UpdateFeedback() {
+    [vdvObject, NAV_IP_CONNECTED]	= (module.Device.SocketConnection.IsConnected)
+    [vdvObject, DEVICE_COMMUNICATING] = (module.Device.IsCommunicating)
+    [vdvObject, DATA_INITIALIZED] = (module.Device.IsInitialized)
+}
+
 
 (***********************************************************)
 (*                STARTUP CODE GOES BELOW                  *)
 (***********************************************************)
 DEFINE_START {
-    create_buffer dvPort,cRxBuffer
-    uIPConnection.Port = TCP_PORT
-
+    create_buffer dvPort, module.RxBuffer.Data
+    module.Device.SocketConnection.Socket = dvPort.PORT
 }
+
 (***********************************************************)
 (*                THE EVENTS GO BELOW                      *)
 (***********************************************************)
 DEFINE_EVENT
+
 data_event[dvPort] {
     online: {
-    uIPConnection.IsConnected = true
-    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'SVSI_ONLINE<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
-    }
-    string: {
-    [vdvObject, DEVICE_COMMUNICATING] = true
-    [vdvObject, DATA_INITIALIZED] = true
-    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_FROM, data.device, data.text))
-    if (!iSemaphore) { Process() }
+        NAVErrorLog(NAV_LOG_LEVEL_INFO,
+                    "'mSVSIDecoder => [', NAVDeviceToString(data.device), ']: Online'")
+
+        module.Device.SocketConnection.IsConnected = true
+        UpdateFeedback()
+
+        NAVTimelineStart(TL_HEARTBEAT,
+                            TL_HEARTBEAT_INTERVAL,
+                            TIMELINE_ABSOLUTE,
+                            TIMELINE_REPEAT)
     }
     offline: {
-    if (data.device.number == 0) {
-        uIPConnection.IsConnected = false
+        NAVErrorLog(NAV_LOG_LEVEL_INFO,
+                    "'mSVSIDecoder => [', NAVDeviceToString(data.device), ']: Offline'")
+
         NAVClientSocketClose(data.device.port)
-        NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'SVSI_OFFLINE<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
-    }
+        Reset()
     }
     onerror: {
-    if (data.device.number == 0) {
-        uIPConnection.IsConnected = false
-        //NAVClientSocketClose(data.device.port)
-        NAVErrorLog(NAV_LOG_LEVEL_DEBUG, "'SVSI_ONERROR<', NAVStringSurroundWith(NAVDeviceToString(data.device), '[', ']'), '>'")
+        NAVErrorLog(NAV_LOG_LEVEL_ERROR,
+                    "'mSVSIDecoder => [', NAVDeviceToString(data.device), ']: OnError : ', NAVGetSocketError(type_cast(data.number))")
+
+        Reset()
     }
+    string: {
+        CommunicationTimeOut(30)
+
+        NAVErrorLog(NAV_LOG_LEVEL_DEBUG,
+                    NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_STRING_FROM,
+                                                data.device,
+                                                data.text))
+
+        select {
+            active (true): {
+                NAVStringGather(module.RxBuffer, DELIMITER)
+            }
+        }
     }
 }
+
 
 data_event[vdvObject] {
     command: {
-    stack_var char cCmdHeader[NAV_MAX_CHARS]
-    stack_var char cCmdParam[3][NAV_MAX_CHARS]
+        stack_var _NAVSnapiMessage message
 
-    NAVErrorLog(NAV_LOG_LEVEL_DEBUG, NAVFormatStandardLogMessage(NAV_STANDARD_LOG_MESSAGE_TYPE_COMMAND_FROM, data.device, data.text))
+        NAVParseSnapiMessage(data.text, message)
 
-    cCmdHeader = DuetParseCmdHeader(data.text)
-    cCmdParam[1] = DuetParseCmdParam(data.text)
-    cCmdParam[2] = DuetParseCmdParam(data.text)
-    cCmdParam[3] = DuetParseCmdParam(data.text)
-    switch (cCmdHeader) {
-        case 'PROPERTY': {
-        switch (cCmdParam[1]) {
-            case 'IP_ADDRESS': {
-            uIPConnection.Address = cCmdParam[2]
-            NAVTimelineStart(TL_IP_CLIENT_CHECK, ltIPClientCheck, TIMELINE_ABSOLUTE, TIMELINE_REPEAT)
-            }
-            case 'PASSWORD': {
-
+        switch (message.Header) {
+            case 'SWITCH': {
+                SendString(BuildChannelCommand(atoi(message.Parameter[1])))
             }
         }
-        }
-        case 'PASSTHRU': { Build(cCmdParam[1]) }
-        case 'SWITCH': {
-        SetChannel(atoi(cCmdParam[1]))
-        }
-    }
     }
 }
 
-channel_event[vdvObject,0] {
+
+channel_event[vdvObject, 0] {
     on: {
-
+        SendString(BuildChannelCommand(channel.channel))
     }
 }
 
 
-define_event timeline_event[TL_IP_CLIENT_CHECK] { MaintainIPConnection() }
+timeline_event[TL_SOCKET_CHECK] { MaintainSocketConnection() }
+
+
+timeline_event[TL_HEARTBEAT] {
+    SendString(BuildGetStatusCommand())
+}
 
 
 (***********************************************************)
 (*                     END OF PROGRAM                      *)
 (*        DO NOT PUT ANY CODE BELOW THIS COMMENT           *)
 (***********************************************************)
-
