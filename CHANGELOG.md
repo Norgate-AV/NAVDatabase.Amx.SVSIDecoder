@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.0](https://github.com/Norgate-AV/NAVDatabase.Amx.SVSIDecoder/compare/v1.1.0...v1.2.0) (2025-09-21)
+
+### 🌟 Features
+
+- update for NAVFoundation v3+ ([8a61e97](https://github.com/Norgate-AV/NAVDatabase.Amx.SVSIDecoder/commit/8a61e9748864cd95f96f064610bd6abe7a3a9d33))
+
 ## [1.1.0](https://github.com/Norgate-AV/NAVDatabase.Amx.SVSIDecoder/compare/v1.0.0...v1.1.0) (2025-04-10)
 
 ### 🌟 Features
